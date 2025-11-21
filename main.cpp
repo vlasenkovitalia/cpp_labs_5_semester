@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <cctype>
+#include <map>
 
 enum class TokenType {
     NUMBER,
@@ -14,6 +15,11 @@ struct Token {
     TokenType type;
     std::string text;
     double value;
+};
+
+std::map<std::string, int> precedence = {
+    {"+", 1}, {"-", 1},
+    {"*", 2}, {"/", 2}
 };
 
 std::vector<Token> tokenize(const std::string& s) {
@@ -58,11 +64,71 @@ std::vector<Token> tokenize(const std::string& s) {
     return tokens;
 }
 
-void print_tokens(const std::vector<Token>& tokens) {
+std::vector<Token> shunting_yard(const std::vector<Token>& tokens) {
+    std::vector<Token> output;
+    std::vector<Token> opstack;
+    
     for (const auto& token : tokens) {
-        std::cout << "[" << token.text << "] ";
+        if (token.type == TokenType::NUMBER) {
+            output.push_back(token);
+        }
+        else if (token.type == TokenType::OPERATOR) {
+            while (!opstack.empty() && 
+                   opstack.back().type == TokenType::OPERATOR &&
+                   precedence[opstack.back().text] >= precedence[token.text]) {
+                output.push_back(opstack.back());
+                opstack.pop_back();
+            }
+            opstack.push_back(token);
+        }
+        else if (token.type == TokenType::LPAREN) {
+            opstack.push_back(token);
+        }
+        else if (token.type == TokenType::RPAREN) {
+            while (!opstack.empty() && opstack.back().type != TokenType::LPAREN) {
+                output.push_back(opstack.back());
+                opstack.pop_back();
+            }
+            if (opstack.empty()) throw std::runtime_error("Mismatched parentheses");
+            opstack.pop_back(); // Remove LPAREN
+        }
     }
-    std::cout << "\n";
+    
+    while (!opstack.empty()) {
+        if (opstack.back().type == TokenType::LPAREN) {
+            throw std::runtime_error("Mismatched parentheses");
+        }
+        output.push_back(opstack.back());
+        opstack.pop_back();
+    }
+    
+    return output;
+}
+
+double evaluate_rpn(const std::vector<Token>& rpn) {
+    std::vector<double> stack;
+    
+    for (const auto& token : rpn) {
+        if (token.type == TokenType::NUMBER) {
+            stack.push_back(token.value);
+        }
+        else if (token.type == TokenType::OPERATOR) {
+            if (stack.size() < 2) throw std::runtime_error("Not enough operands");
+            double b = stack.back(); stack.pop_back();
+            double a = stack.back(); stack.pop_back();
+            
+            if (token.text == "+") stack.push_back(a + b);
+            else if (token.text == "-") stack.push_back(a - b);
+            else if (token.text == "*") stack.push_back(a * b);
+            else if (token.text == "/") {
+                if (b == 0) throw std::runtime_error("Division by zero");
+                stack.push_back(a / b);
+            }
+        }
+    }
+    
+    if (stack.size() != 1) throw std::runtime_error("Invalid expression");
+    return stack.back();
 }
 
 int main() {
@@ -77,8 +143,9 @@ int main() {
         
         try {
             auto tokens = tokenize(line);
-            std::cout << "Tokens: ";
-            print_tokens(tokens);
+            auto rpn = shunting_yard(tokens);
+            double result = evaluate_rpn(rpn);
+            std::cout << "= " << result << "\n";
         }
         catch (const std::exception& e) {
             std::cout << "Error: " << e.what() << "\n";
