@@ -3,17 +3,21 @@
 #include <vector>
 #include <cctype>
 #include <map>
+#include <cmath>
+#include <windows.h>
 
-enum class TokenType {
+enum class TokenTypeEnum {
     NUMBER,
     OPERATOR,
     UNARY_OPERATOR,
     LPAREN,
-    RPAREN
+    RPAREN,
+    IDENTIFIER,
+    COMMA
 };
 
 struct Token {
-    TokenType type;
+    TokenTypeEnum type;
     std::string text;
     double value;
 };
@@ -29,6 +33,33 @@ std::map<std::string, OpInfo> op_info = {
     {"^", {4, true}},
     {"+u", {5, false}}, {"-u", {5, false}}  // Unary operators
 };
+
+struct RPNItem {
+    Token token;
+    int arg_count;
+};
+
+// ========== PLUGIN SYSTEM ==========
+
+extern "C" {
+    typedef double (*plugin_fn_t)(const double* args, int nargs);
+    
+    struct PluginDescriptor {
+        const char* name;
+        int min_arity;
+        int max_arity;
+        plugin_fn_t fn;
+    };
+}
+
+struct FunctionEntry {
+    std::string name;
+    int min_arity;
+    int max_arity;
+    plugin_fn_t fn;
+};
+
+std::map<std::string, FunctionEntry> g_functions;
 
 std::vector<Token> tokenize(const std::string& s) {
     std::vector<Token> tokens;
@@ -49,26 +80,40 @@ std::vector<Token> tokenize(const std::string& s) {
                 ++i;
             }
             std::string num_str = s.substr(start, i - start);
-            tokens.push_back({TokenType::NUMBER, num_str, std::stod(num_str)});
+            tokens.push_back({TokenTypeEnum::NUMBER, num_str, std::stod(num_str)});
             expect_unary = false;
             continue;
         }
-        
+        if (isalpha(s[i]) || s[i] == '_') {
+            size_t start = i;
+            while (i < s.size() && (isalnum(s[i]) || s[i] == '_')) {
+                ++i;
+            }
+            std::string ident = s.substr(start, i - start);
+            tokens.push_back({TokenTypeEnum::IDENTIFIER, ident});
+            expect_unary = false;
+            continue;
+        }
         if (s[i] == '(') {
-            tokens.push_back({TokenType::LPAREN, "("});
+            tokens.push_back({TokenTypeEnum::LPAREN, "("});
             ++i;
             expect_unary = true;
         }
         else if (s[i] == ')') {
-            tokens.push_back({TokenType::RPAREN, ")"});
+            tokens.push_back({TokenTypeEnum::RPAREN, ")"});
             ++i;
             expect_unary = false;
         }
+        else if (s[i] == ',') {
+            tokens.push_back({TokenTypeEnum::COMMA, ","});
+            ++i;
+            expect_unary = true;
+        }
         else if (s[i] == '+' || s[i] == '-' || s[i] == '*' || s[i] == '/' || s[i] == '^') {
             if (expect_unary && (s[i] == '+' || s[i] == '-')) {
-                tokens.push_back({TokenType::UNARY_OPERATOR, std::string(1, s[i]) + "u"});
+                tokens.push_back({TokenTypeEnum::UNARY_OPERATOR, std::string(1, s[i]) + "u"});
             } else {
-                tokens.push_back({TokenType::OPERATOR, std::string(1, s[i])});
+                tokens.push_back({TokenTypeEnum::OPERATOR, std::string(1, s[i])});
             }
             ++i;
             expect_unary = true;
@@ -81,92 +126,193 @@ std::vector<Token> tokenize(const std::string& s) {
     return tokens;
 }
 
-std::vector<Token> shunting_yard(const std::vector<Token>& tokens) {
-    std::vector<Token> output;
+std::vector<RPNItem> shunting_yard(const std::vector<Token>& tokens) {
+    std::vector<RPNItem> output;
     std::vector<Token> opstack;
-    
-    for (const auto& token : tokens) {
-        if (token.type == TokenType::NUMBER) {
-            output.push_back(token);
+    std::vector<int> arg_count_stack;
+
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        const Token& t = tokens[i];
+        if (t.type == TokenTypeEnum::NUMBER) { 
+            output.push_back({ t, -1 });
         }
-        else if (token.type == TokenType::OPERATOR || token.type == TokenType::UNARY_OPERATOR) {
-            while (!opstack.empty() && 
-                   (opstack.back().type == TokenType::OPERATOR || 
-                    opstack.back().type == TokenType::UNARY_OPERATOR)) {
-                const auto& top_op = op_info[opstack.back().text];
-                const auto& curr_op = op_info[token.text];
-                
-                if ((curr_op.right_assoc && curr_op.precedence < top_op.precedence) ||
-                    (!curr_op.right_assoc && curr_op.precedence <= top_op.precedence)) {
-                    output.push_back(opstack.back());
-                    opstack.pop_back();
-                } else {
-                    break;
-                }
+        else if (t.type == TokenTypeEnum::IDENTIFIER) {  
+            bool isFunc = false;
+            if (i + 1 < tokens.size() && tokens[i + 1].type == TokenTypeEnum::LPAREN) isFunc = true;
+            if (isFunc) {
+                opstack.push_back(t);
+                arg_count_stack.push_back(1); // Start with 1 argument
             }
-            opstack.push_back(token);
+            else {
+                throw std::runtime_error("Unknown identifier without (): " + t.text);
+            }
         }
-        else if (token.type == TokenType::LPAREN) {
-            opstack.push_back(token);
-        }
-        else if (token.type == TokenType::RPAREN) {
-            while (!opstack.empty() && opstack.back().type != TokenType::LPAREN) {
-                output.push_back(opstack.back());
+        else if (t.type == TokenTypeEnum::COMMA) {   
+            if (opstack.empty()) throw std::runtime_error("Misplaced comma");
+            while (!opstack.empty() && opstack.back().type != TokenTypeEnum::LPAREN) {  
+                output.push_back({ opstack.back(), -1 });
                 opstack.pop_back();
             }
-            if (opstack.empty()) throw std::runtime_error("Mismatched parentheses");
-            opstack.pop_back(); // Remove LPAREN
+            if (opstack.empty()) throw std::runtime_error("Misplaced comma / missing '('");
+            if (arg_count_stack.empty()) throw std::runtime_error("Comma outside function");
+            arg_count_stack.back() += 1; // Increment argument count
+        }
+        else if (t.type == TokenTypeEnum::OPERATOR || t.type == TokenTypeEnum::UNARY_OPERATOR) {  
+            std::string o1 = t.text;
+            while (!opstack.empty() && 
+                   (opstack.back().type == TokenTypeEnum::OPERATOR || opstack.back().type == TokenTypeEnum::UNARY_OPERATOR)) {  
+                std::string o2 = opstack.back().text;
+                OpInfo& p1 = op_info[o1];
+                OpInfo& p2 = op_info[o2];
+                if ((p1.right_assoc && p1.precedence < p2.precedence) || (!p1.right_assoc && p1.precedence <= p2.precedence)) { 
+                    output.push_back({ opstack.back(), -1 });
+                    opstack.pop_back();
+                }
+                else break;
+            }
+            opstack.push_back(t);
+        }
+        else if (t.type == TokenTypeEnum::LPAREN) {
+            opstack.push_back(t);
+        }
+        else if (t.type == TokenTypeEnum::RPAREN) { 
+            bool foundLP = false;
+            while (!opstack.empty()) {
+                Token top = opstack.back(); opstack.pop_back();
+                if (top.type == TokenTypeEnum::LPAREN) { foundLP = true; break; }  
+                output.push_back({ top, -1 });
+            }
+            if (!foundLP) throw std::runtime_error("Mismatched parentheses");
+            
+            // Handle function call
+            if (!opstack.empty() && opstack.back().type == TokenTypeEnum::IDENTIFIER) {  
+                Token funcTok = opstack.back(); opstack.pop_back();
+                int arg_count = 0;
+                if (!arg_count_stack.empty()) {
+                    arg_count = arg_count_stack.back();
+                    arg_count_stack.pop_back();
+                }
+                output.push_back({ funcTok, arg_count });
+            }
         }
     }
     
     while (!opstack.empty()) {
-        if (opstack.back().type == TokenType::LPAREN) {
-            throw std::runtime_error("Mismatched parentheses");
-        }
-        output.push_back(opstack.back());
-        opstack.pop_back();
+        Token t = opstack.back(); opstack.pop_back();
+        if (t.type == TokenTypeEnum::LPAREN) throw std::runtime_error("Mismatched parentheses");
+        output.push_back({ t, -1 });
     }
     
     return output;
 }
 
-double evaluate_rpn(const std::vector<Token>& rpn) {
+double call_function(const FunctionEntry& fe, const std::vector<double>& args) {
+    if (fe.fn == nullptr) throw std::runtime_error("Function implementation missing for " + fe.name);
+    
+    // Check arity
+    if ((fe.min_arity >= 0 && (int)args.size() < fe.min_arity) || 
+        (fe.max_arity >= 0 && (int)args.size() > fe.max_arity)) {
+        throw std::runtime_error("Function " + fe.name + " called with wrong number of arguments");
+    }
+
+    try {
+        double result = fe.fn(args.empty() ? nullptr : &args[0], (int)args.size());
+        return result;
+    }
+    catch (const std::exception& ex) {
+        throw std::runtime_error(std::string("Function ") + fe.name + " threw: " + ex.what());
+    }
+    catch (...) {
+        throw std::runtime_error(std::string("Function ") + fe.name + " threw unknown exception");
+    }
+}
+
+double evaluate_rpn(const std::vector<RPNItem>& rpn) {
     std::vector<double> stack;
     
-    for (const auto& token : rpn) {
-        if (token.type == TokenType::NUMBER) {
-            stack.push_back(token.value);
+    for (const auto& item : rpn) {
+        const Token& tk = item.token;
+        
+        if (tk.type == TokenTypeEnum::NUMBER) {  
+            stack.push_back(tk.value);
         }
-        else if (token.type == TokenType::OPERATOR) {
-            if (stack.size() < 2) throw std::runtime_error("Not enough operands");
+        else if (tk.type == TokenTypeEnum::OPERATOR) {  
+            if (stack.size() < 2) throw std::runtime_error("Insufficient operands for operator " + tk.text);
             double b = stack.back(); stack.pop_back();
             double a = stack.back(); stack.pop_back();
-            
-            if (token.text == "+") stack.push_back(a + b);
-            else if (token.text == "-") stack.push_back(a - b);
-            else if (token.text == "*") stack.push_back(a * b);
-            else if (token.text == "/") {
-                if (b == 0) throw std::runtime_error("Division by zero");
-                stack.push_back(a / b);
+            double r = 0;
+            if (tk.text == "+") r = a + b;
+            else if (tk.text == "-") r = a - b;
+            else if (tk.text == "*") r = a * b;
+            else if (tk.text == "/") {
+                if (b == 0.0) throw std::runtime_error("Division by zero");
+                r = a / b;
             }
-            else if (token.text == "^") stack.push_back(std::pow(a, b));
+            else if (tk.text == "^") {
+                r = std::pow(a, b);
+            }
+            else throw std::runtime_error("Unknown operator " + tk.text);
+            stack.push_back(r);
         }
-        else if (token.type == TokenType::UNARY_OPERATOR) {
-            if (stack.empty()) throw std::runtime_error("Not enough operands");
+        else if (tk.type == TokenTypeEnum::UNARY_OPERATOR) {
+            if (stack.size() < 1) throw std::runtime_error("Insufficient operands for unary operator " + tk.text);
             double a = stack.back(); stack.pop_back();
-
-            if (token.text == "+u") stack.push_back(a);
-            else if (token.text == "-u") stack.push_back(-a);
+            if (tk.text == "+u") stack.push_back(a);
+            else if (tk.text == "-u") stack.push_back(-a);
+            else throw std::runtime_error("Unknown unary operator " + tk.text);
+        }
+        else if (tk.type == TokenTypeEnum::IDENTIFIER) {  
+            int argcount = item.arg_count;
+            if (argcount < 0) throw std::runtime_error("Internal error: function argcount missing");
+            if ((int)stack.size() < argcount) throw std::runtime_error("Not enough values for function " + tk.text);
+            
+            std::vector<double> args(argcount);
+            for (int k = argcount - 1; k >= 0; --k) {
+                args[k] = stack.back(); stack.pop_back();
+            }
+            
+            auto itf = g_functions.find(tk.text);
+            if (itf == g_functions.end())
+                throw std::runtime_error("Unknown function: " + tk.text);
+                
+            double res = call_function(itf->second, args);
+            stack.push_back(res);
         }
     }
     
-    if (stack.size() != 1) throw std::runtime_error("Invalid expression");
+    if (stack.size() != 1) throw std::runtime_error("Malformed expression (stack size != 1 after eval)");
     return stack.back();
+}
+
+
+void register_builtin_functions() {
+    g_functions["sqrt"] = {"sqrt", 1, 1, [](const double* args, int nargs) {
+        if (nargs != 1) throw std::runtime_error("sqrt expects 1 argument");
+        if (args[0] < 0) throw std::runtime_error("sqrt domain error");
+        return std::sqrt(args[0]);
+    }};
+    
+    g_functions["max"] = {"max", 2, 2, [](const double* args, int nargs) {
+        if (nargs != 2) throw std::runtime_error("max expects 2 arguments");
+        return max(args[0], args[1]);
+    }};
+
+     g_functions["min"] = {"min", 2, 2, [](const double* args, int nargs) {
+        if (nargs != 2) throw std::runtime_error("min expects 2 arguments");
+        return min(args[0], args[1]);
+    }};
 }
 
 int main() {
     std::cout << "Calculator - Type 'quit' to exit\n";
     
+    register_builtin_functions();
+    std::cout << "Registered functions: ";
+    for (const auto& [name, _] : g_functions) {
+        std::cout << name << " ";
+    }
+    std::cout << "\n";
+
     std::string line;
     while (true) {
         std::cout << "> ";
