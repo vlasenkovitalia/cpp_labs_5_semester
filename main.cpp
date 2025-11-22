@@ -1,39 +1,35 @@
 #include <iostream>
 #include <string>
+#include <stdexcept>
 #include "calculator.h"
 #include "plugin_system.h"
 
-
 int main() {
-    std::cout << "Calculator - Type 'quit' to exit\n";
+    std::cout << "Calculator\n";
 
-    register_builtin_functions();
-    
     load_plugins_from_folder("./plugins");
-    
-    print_available_functions();
 
+    std::cout << "Type expressions, or 'quit' to exit.\n";
     std::string line;
     while (true) {
         std::cout << "> ";
         if (!std::getline(std::cin, line)) break;
-        if (line == "quit" || line == "exit") break;
         if (line.empty()) continue;
-        
+        if (line == "quit" || line == "exit") break;
         try {
-            auto tokens = tokenize(line);
-            auto rpn = shunting_yard(tokens);
-            double result = evaluate_rpn(rpn);
-            std::cout << "= " << result << "\n";
+            auto toks = tokenize(line);
+            auto rpn = shunting_yard(toks);
+            double v = evaluate_rpn(rpn);
+            std::cout << v << "\n";
         }
-        catch (const std::exception& e) {
-            std::cout << "Error: " << e.what() << "\n";
+        catch (const std::exception& ex) {
+            std::cout << "Error: " << ex.what() << "\n";
+        }
+        catch (...) {
+            std::cout << "Unknown error occurred\n";
         }
     }
     
-    for (HMODULE handle : g_loaded_modules) {
-        FreeLibrary(handle);
-    }
-
+    cleanup_plugins();
     return 0;
 }

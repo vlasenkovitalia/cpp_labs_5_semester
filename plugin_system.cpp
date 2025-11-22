@@ -47,24 +47,6 @@ double call_function(const FunctionEntry& fe, const std::vector<double>& args) {
     }
 }
 
-void register_builtin_functions() {
-    g_functions["sqrt"] = {"sqrt", 1, 1, [](const double* args, int nargs) {
-        if (nargs != 1) throw std::runtime_error("sqrt expects 1 argument");
-        if (args[0] < 0) throw std::runtime_error("sqrt domain error");
-        return std::sqrt(args[0]);
-    }};
-    
-    g_functions["max"] = {"max", 2, 2, [](const double* args, int nargs) {
-        if (nargs != 2) throw std::runtime_error("max expects 2 arguments");
-        return max(args[0], args[1]);
-    }};
-
-     g_functions["min"] = {"min", 2, 2, [](const double* args, int nargs) {
-        if (nargs != 2) throw std::runtime_error("min expects 2 arguments");
-        return min(args[0], args[1]);
-    }};
-}
-
 bool try_load_plugin(const std::string& dll_path) {
     HMODULE handle = LoadLibraryA(dll_path.c_str());
     if (!handle) {
@@ -111,10 +93,9 @@ bool try_load_plugin(const std::string& dll_path) {
     return true;
 }
 
-void print_available_functions() {
-    std::cout << "Available functions: ";
-    for (const auto& [name, _] : g_functions) {
-        std::cout << name << " ";
+void cleanup_plugins() {
+    for (HMODULE h : g_loaded_modules) {
+        FreeLibrary(h);
     }
-    std::cout << "\n";
+    g_loaded_modules.clear();
 }

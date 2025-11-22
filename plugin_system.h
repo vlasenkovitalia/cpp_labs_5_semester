@@ -29,6 +29,5 @@ extern std::vector<HMODULE> g_loaded_modules;
 
 void load_plugins_from_folder(const std::string& folder);
 double call_function(const FunctionEntry& fe, const std::vector<double>& args);
-void register_builtin_functions();
 bool try_load_plugin(const std::string& dll_path);
-void print_available_functions();
+void cleanup_plugins();
