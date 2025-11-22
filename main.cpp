@@ -7,6 +7,7 @@
 enum class TokenType {
     NUMBER,
     OPERATOR,
+    UNARY_OPERATOR,
     LPAREN,
     RPAREN
 };
@@ -17,14 +18,22 @@ struct Token {
     double value;
 };
 
-std::map<std::string, int> precedence = {
-    {"+", 1}, {"-", 1},
-    {"*", 2}, {"/", 2}
+struct OpInfo {
+    int precedence;
+    bool right_assoc;
+};
+
+std::map<std::string, OpInfo> op_info = {
+    {"+", {2, false}}, {"-", {2, false}},
+    {"*", {3, false}}, {"/", {3, false}},
+    {"^", {4, true}},
+    {"+u", {5, false}}, {"-u", {5, false}}  // Unary operators
 };
 
 std::vector<Token> tokenize(const std::string& s) {
     std::vector<Token> tokens;
     size_t i = 0;
+    bool expect_unary = true;
     
     while (i < s.size()) {
         if (isspace(s[i])) {
@@ -41,20 +50,28 @@ std::vector<Token> tokenize(const std::string& s) {
             }
             std::string num_str = s.substr(start, i - start);
             tokens.push_back({TokenType::NUMBER, num_str, std::stod(num_str)});
+            expect_unary = false;
             continue;
         }
         
         if (s[i] == '(') {
             tokens.push_back({TokenType::LPAREN, "("});
             ++i;
+            expect_unary = true;
         }
         else if (s[i] == ')') {
             tokens.push_back({TokenType::RPAREN, ")"});
             ++i;
+            expect_unary = false;
         }
-        else if (s[i] == '+' || s[i] == '-' || s[i] == '*' || s[i] == '/') {
-            tokens.push_back({TokenType::OPERATOR, std::string(1, s[i])});
+        else if (s[i] == '+' || s[i] == '-' || s[i] == '*' || s[i] == '/' || s[i] == '^') {
+            if (expect_unary && (s[i] == '+' || s[i] == '-')) {
+                tokens.push_back({TokenType::UNARY_OPERATOR, std::string(1, s[i]) + "u"});
+            } else {
+                tokens.push_back({TokenType::OPERATOR, std::string(1, s[i])});
+            }
             ++i;
+            expect_unary = true;
         }
         else {
             throw std::runtime_error("Unknown character: " + std::string(1, s[i]));
@@ -72,12 +89,20 @@ std::vector<Token> shunting_yard(const std::vector<Token>& tokens) {
         if (token.type == TokenType::NUMBER) {
             output.push_back(token);
         }
-        else if (token.type == TokenType::OPERATOR) {
+        else if (token.type == TokenType::OPERATOR || token.type == TokenType::UNARY_OPERATOR) {
             while (!opstack.empty() && 
-                   opstack.back().type == TokenType::OPERATOR &&
-                   precedence[opstack.back().text] >= precedence[token.text]) {
-                output.push_back(opstack.back());
-                opstack.pop_back();
+                   (opstack.back().type == TokenType::OPERATOR || 
+                    opstack.back().type == TokenType::UNARY_OPERATOR)) {
+                const auto& top_op = op_info[opstack.back().text];
+                const auto& curr_op = op_info[token.text];
+                
+                if ((curr_op.right_assoc && curr_op.precedence < top_op.precedence) ||
+                    (!curr_op.right_assoc && curr_op.precedence <= top_op.precedence)) {
+                    output.push_back(opstack.back());
+                    opstack.pop_back();
+                } else {
+                    break;
+                }
             }
             opstack.push_back(token);
         }
@@ -124,6 +149,14 @@ double evaluate_rpn(const std::vector<Token>& rpn) {
                 if (b == 0) throw std::runtime_error("Division by zero");
                 stack.push_back(a / b);
             }
+            else if (token.text == "^") stack.push_back(std::pow(a, b));
+        }
+        else if (token.type == TokenType::UNARY_OPERATOR) {
+            if (stack.empty()) throw std::runtime_error("Not enough operands");
+            double a = stack.back(); stack.pop_back();
+
+            if (token.text == "+u") stack.push_back(a);
+            else if (token.text == "-u") stack.push_back(-a);
         }
     }
     
